@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import discord
 from discord.ext import commands
 
-from cogs.music import MusicPlayer, YTDL, YTDLSource, is_url
+from cogs.music import MusicPlayer, YTDL, YTDLSource, is_playlist_url, is_url
 from main import MusicBot
 
 
@@ -19,6 +19,9 @@ class MusicHelpersTest(unittest.TestCase):
         self.assertTrue(is_url("https://www.youtube.com/watch?v=abc"))
         self.assertFalse(is_url("tavern ambience music"))
         self.assertFalse(is_url("javascript:alert(1)"))
+        self.assertTrue(is_playlist_url("https://www.youtube.com/playlist?list=PL123"))
+        self.assertTrue(is_playlist_url("https://www.youtube.com/watch?v=abc&list=PL123"))
+        self.assertFalse(is_playlist_url("https://www.youtube.com/watch?v=abc"))
 
 
 class YTDLSourceTest(unittest.IsolatedAsyncioTestCase):
@@ -73,7 +76,7 @@ class BotSetupTest(unittest.IsolatedAsyncioTestCase):
             await bot.load_extension("cogs.music")
             self.assertEqual(
                 {command.name for command in bot.tree.get_commands()},
-                {"join", "leave", "loop", "np", "pause", "play", "queue", "resume", "skip"},
+                {"join", "leave", "loop", "np", "pause", "play", "playlist", "queue", "resume", "skip"},
             )
         finally:
             await bot.close()

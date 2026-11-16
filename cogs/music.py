@@ -22,6 +22,11 @@ def is_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def is_playlist_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return is_url(value) and ("list=" in parsed.query or "playlist" in parsed.path)
+
+
 async def defer_interaction(ctx: commands.Context) -> None:
     if ctx.interaction and not ctx.interaction.response.is_done():
         await ctx.interaction.response.defer(thinking=True)
@@ -46,10 +51,29 @@ class YTDL:
         "extract_flat": True,
         "lazy_playlist": False,
     }
+    playlist_options = {
+        **ytdl_options,
+        "noplaylist": False,
+        "extract_flat": True,
+        "lazy_playlist": False,
+    }
     ffmpeg_options = {
         "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
         "options": "-vn",
     }
+
+    @classmethod
+    async def extract_playlist(cls, query: str):
+        def run_extract():
+            with yt_dlp.YoutubeDL(cls.playlist_options) as downloader:
+                return downloader.extract_info(query, download=False)
+
+        try:
+            return await asyncio.to_thread(run_extract)
+        except DownloadError as exc:
+            raise DownloadError(
+                "YouTube rejected the playlist request. Please verify the URL is a public playlist."
+            ) from exc
 
     @classmethod
     async def extract(cls, query: str, *, flat: bool = False):
@@ -355,8 +379,26 @@ class Music(commands.Cog):
         view = YTDLChoiceView(self, ctx, sources)
         view.message = await ctx.send(embed=embed, view=view)
 
+    async def _queue_playlist(self, ctx, url: str):
+        data = await YTDL.extract_playlist(url)
+        entries = [entry for entry in data.get("entries", []) if entry]
+        if not entries:
+            raise DownloadError("No playable tracks found in this playlist.")
+        player = self.get_player(ctx)
+        for entry in entries:
+            source = YTDLSource.from_data(ctx.author, entry)
+            await player.queue.put(source)
+        title = data.get("title") or "Playlist"
+        embed = discord.Embed(
+            description=f"Added **{len(entries)}** tracks from [{title}]({url}) to queue 📀",
+            color=discord.Color.greyple(),
+        )
+        embed.set_author(icon_url=self.bot.user.display_avatar.url, name="Playlist Added 🎶")
+        embed.set_footer(text=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+        await ctx.send(embed=embed)
+
     @commands.hybrid_command(name="play", aliases=["search", "pl"], description="Play or search for a track.")
-    @app_commands.describe(search="A YouTube URL or search terms")
+    @app_commands.describe(search="A YouTube URL, playlist URL, or search terms")
     @app_commands.guild_only()
     async def play(self, ctx, *, search: str):
         await defer_interaction(ctx)
@@ -364,13 +406,24 @@ class Music(commands.Cog):
             return await self.send_error_embed(
                 ctx, "The search must be between 1 and 250 characters."
             )
-        if is_url(search):
+        if is_playlist_url(search):
+            await self._queue_playlist(ctx, search)
+        elif is_url(search):
             source = await YTDLSource(ctx.author).load_metadata(search)
             player = self.get_player(ctx)
             await player.queue.put(source)
             await self.send_source_embed(ctx, source, "Added to queue 📀")
         else:
             await self.list_choices(ctx, search)
+
+    @commands.hybrid_command(name="playlist", aliases=["plsearch"], description="Queue an entire YouTube playlist.")
+    @app_commands.describe(url="A YouTube playlist URL")
+    @app_commands.guild_only()
+    async def playlist(self, ctx, *, url: str):
+        await defer_interaction(ctx)
+        if not is_url(url):
+            return await self.send_error_embed(ctx, "Please provide a valid playlist URL.")
+        await self._queue_playlist(ctx, url)
 
     @commands.hybrid_command(name="loop", aliases=["lp", "repeat"], description="Repeat the current track.")
     @app_commands.describe(rep="Number of repeats, up to 10")
@@ -417,7 +470,7 @@ class Music(commands.Cog):
         voice_client.resume()
         await self.send_source_embed(ctx, self.get_player(ctx).current, "Resumed ⏯")
 
-    @commands.hybrid_command(name="queue", aliases=["q", "playlist"], description="Show the queue.")
+    @commands.hybrid_command(name="queue", aliases=["q", "list"], description="Show the queue.")
     @app_commands.guild_only()
     async def queue_info(self, ctx):
         voice_client = await self.get_voice_client(ctx)
@@ -513,6 +566,7 @@ class Music(commands.Cog):
         await ctx.send("**Disconnected** 👋")
 
     @play.before_invoke
+    @playlist.before_invoke
     async def ensure_voice(self, ctx):
         if ctx.voice_client is None or not ctx.voice_client.is_connected():
             await self.connect(ctx)
