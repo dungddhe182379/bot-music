@@ -104,15 +104,24 @@ class YTDL:
 
 
 class YTDLSource:
-    def __init__(self, requester, *, webpage_url=None, title=None, duration=None):
+    def __init__(
+        self,
+        requester,
+        *,
+        webpage_url=None,
+        title=None,
+        duration=None,
+        notify: bool = True,
+    ):
         self.requester = requester
         self.title = title
         self.webpage_url = webpage_url
         self.duration_seconds = duration
         self.url = None
+        self.notify = notify
 
     @classmethod
-    def from_data(cls, requester, data):
+    def from_data(cls, requester, data, *, notify: bool = True):
         webpage_url = data.get("webpage_url")
         if not webpage_url:
             raw_url = data.get("url")
@@ -128,6 +137,7 @@ class YTDLSource:
             webpage_url=webpage_url,
             title=data.get("title") or "Unknown title",
             duration=data.get("duration"),
+            notify=notify,
         )
 
     async def load_metadata(self, query: str):
@@ -274,7 +284,7 @@ class MusicPlayer:
                             self._track_finished, error
                         ),
                     )
-                    if self.display_playing:
+                    if self.display_playing and getattr(source, "notify", True):
                         await self.ctx.cog.send_source_embed(
                             self.ctx, source, "Now playing 🎶"
                         )
@@ -358,7 +368,7 @@ class Music(commands.Cog):
         return embed
 
     async def send_source_embed(self, ctx, source, title):
-        await ctx.send(embed=self.source_embed(ctx, source, title))
+        await ctx.send(embed=self.source_embed(ctx, source, title), silent=True)
 
     async def send_error_embed(self, ctx, error):
         embed = discord.Embed(description=error, color=discord.Color.dark_red())
@@ -400,6 +410,82 @@ class Music(commands.Cog):
         view = YTDLChoiceView(self, ctx, sources)
         view.message = await ctx.send(embed=embed, view=view)
 
+    def build_playlist_embeds(
+        self,
+        ctx,
+        *,
+        playlist_title: str,
+        playlist_url: str,
+        sources: list,
+        total_found: int,
+    ) -> list[discord.Embed]:
+        total_tracks = len(sources)
+        header = (
+            f"📂 **[{playlist_title}]({playlist_url})**\n"
+            f"🔇 *Chế độ phát yên tĩnh: Bot sẽ không gửi tin nhắn mỗi khi đổi bài.*\n\n"
+        )
+        use_links = total_tracks <= 30
+        lines = []
+        for idx, source in enumerate(sources, start=1):
+            dur = source.duration
+            title = source.title or "Unknown title"
+            url = source.webpage_url
+            if use_links and url:
+                cut_title = title[:45] + "..." if len(title) > 48 else title
+                lines.append(f"`{idx}.` [{cut_title}]({url}) | `{dur}`")
+            else:
+                cut_title = title[:40] + "..." if len(title) > 43 else title
+                lines.append(f"`{idx}.` {cut_title} | `{dur}`")
+
+        author_name = (
+            f"Playlist Added ({total_tracks} tracks) 🎶"
+            if total_found <= total_tracks
+            else f"Playlist Added ({total_tracks}/{total_found} tracks) 🎶"
+        )
+        bot_avatar = self.bot.user.display_avatar.url if self.bot.user else None
+
+        embeds = []
+        current_embed = discord.Embed(color=discord.Color.greyple())
+        if bot_avatar:
+            current_embed.set_author(name=author_name, icon_url=bot_avatar)
+        else:
+            current_embed.set_author(name=author_name)
+
+        current_desc = header
+        total_chars = len(header) + len(author_name)
+        shown_count = 0
+
+        for line in lines:
+            line_nl = line + "\n"
+            line_len = len(line_nl)
+            if len(current_desc) + line_len > 3800 or total_chars + line_len > 5500:
+                current_embed.description = current_desc.strip()
+                embeds.append(current_embed)
+                if len(embeds) >= 10 or total_chars + line_len > 5500:
+                    break
+                current_embed = discord.Embed(color=discord.Color.greyple())
+                current_desc = ""
+
+            current_desc += line_nl
+            total_chars += line_len
+            shown_count += 1
+
+        if current_desc and current_embed not in embeds:
+            if shown_count < total_tracks:
+                current_desc += f"\n*... và {total_tracks - shown_count} bài hát tiếp theo (dùng /queue để xem)*"
+            current_embed.description = current_desc.strip()
+            embeds.append(current_embed)
+        elif shown_count < total_tracks and embeds:
+            embeds[-1].description += f"\n*... và {total_tracks - shown_count} bài hát tiếp theo (dùng /queue để xem)*"
+
+        author_display = getattr(ctx.author, "display_name", str(ctx.author))
+        author_avatar = getattr(getattr(ctx.author, "display_avatar", None), "url", None)
+        embeds[-1].set_footer(
+            text=author_display,
+            icon_url=author_avatar,
+        )
+        return embeds
+
     async def _queue_playlist(self, ctx, query: str):
         query = query.strip()
         is_query_url = is_url(query)
@@ -428,20 +514,25 @@ class Music(commands.Cog):
         entries = entries[:max_tracks]
 
         player = self.get_player(ctx)
+        sources = []
         for entry in entries:
-            source = YTDLSource.from_data(ctx.author, entry)
+            source = YTDLSource.from_data(ctx.author, entry, notify=False)
             await player.queue.put(source)
+            sources.append(source)
 
         title = data.get("title") or query
-        url_display = data.get("webpage_url") or (query if is_query_url else f"https://www.youtube.com/results?search_query={query}")
-        count_msg = f"**{len(entries)}** tracks" if total_found <= max_tracks else f"**{len(entries)}** tracks (capped from {total_found})"
-        embed = discord.Embed(
-            description=f"Added {count_msg} from [{title}]({url_display}) to queue 📀",
-            color=discord.Color.greyple(),
+        url_display = (
+            data.get("webpage_url")
+            or (query if is_query_url else f"https://www.youtube.com/results?search_query={query}")
         )
-        embed.set_author(icon_url=self.bot.user.display_avatar.url, name="Playlist Added 🎶")
-        embed.set_footer(text=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
-        await ctx.send(embed=embed)
+        embeds = self.build_playlist_embeds(
+            ctx,
+            playlist_title=title,
+            playlist_url=url_display,
+            sources=sources,
+            total_found=total_found,
+        )
+        await ctx.send(embeds=embeds, silent=True)
 
     @commands.hybrid_command(name="play", aliases=["search", "pl"], description="Play or search for a track.")
     @app_commands.describe(search="A YouTube URL, playlist URL, or search terms")
@@ -493,6 +584,7 @@ class Music(commands.Cog):
                     webpage_url=player.current.webpage_url,
                     title=player.current.title,
                     duration=player.current.duration_seconds,
+                    notify=player.current.notify,
                 )
             )
         await self.send_source_embed(ctx, player.current, f"Queued {rep} repeat(s) 🔄")

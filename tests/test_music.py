@@ -66,6 +66,77 @@ class YTDLSourceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source.title, "Current title")
         self.assertEqual(source.duration, "02m 05s")
 
+    def test_ytdl_source_from_data_notify_flag(self):
+        requester = SimpleNamespace(mention="@player")
+        data = {"title": "Sample Song", "webpage_url": "https://example.com/song", "duration": 180}
+        source_normal = YTDLSource.from_data(requester, data)
+        self.assertTrue(source_normal.notify)
+
+        source_silent = YTDLSource.from_data(requester, data, notify=False)
+        self.assertFalse(source_silent.notify)
+
+
+class PlaylistEmbedTest(unittest.TestCase):
+    def setUp(self):
+        from cogs.music import Music
+        self.bot = SimpleNamespace(user=SimpleNamespace(display_avatar=SimpleNamespace(url="https://bot.test/avatar.png")))
+        self.cog = Music(self.bot)
+        self.ctx = SimpleNamespace(
+            author=SimpleNamespace(
+                display_name="Tester",
+                display_avatar=SimpleNamespace(url="https://user.test/avatar.png"),
+            )
+        )
+
+    def test_build_playlist_embeds_small(self):
+        sources = [
+            YTDLSource(self.ctx.author, webpage_url=f"https://yt.test/{i}", title=f"Track {i}", duration=120)
+            for i in range(1, 6)
+        ]
+        embeds = self.cog.build_playlist_embeds(
+            self.ctx,
+            playlist_title="Small Mix",
+            playlist_url="https://yt.test/playlist?list=123",
+            sources=sources,
+            total_found=5,
+        )
+        self.assertEqual(len(embeds), 1)
+        self.assertIn("Small Mix", embeds[0].description)
+        self.assertIn("Track 1", embeds[0].description)
+        self.assertIn("Track 5", embeds[0].description)
+        self.assertIn("Chế độ phát yên tĩnh", embeds[0].description)
+        self.assertEqual(embeds[0].author.name, "Playlist Added (5 tracks) 🎶")
+
+    def test_build_playlist_embeds_large_respects_discord_limits(self):
+        sources = [
+            YTDLSource(self.ctx.author, webpage_url=f"https://yt.test/{i}", title=f"Long Track Title Number {i} With Extra Details", duration=215)
+            for i in range(1, 101)
+        ]
+        embeds = self.cog.build_playlist_embeds(
+            self.ctx,
+            playlist_title="Huge 100 Track Playlist",
+            playlist_url="https://yt.test/playlist?list=large",
+            sources=sources,
+            total_found=100,
+        )
+        self.assertGreaterEqual(len(embeds), 1)
+        self.assertLessEqual(len(embeds), 10)
+
+        total_chars = 0
+        for embed in embeds:
+            desc = embed.description or ""
+            self.assertLessEqual(len(desc), 4096)
+            total_chars += len(desc)
+            if embed.title:
+                total_chars += len(embed.title)
+            if embed.author and embed.author.name:
+                total_chars += len(embed.author.name)
+            if embed.footer and embed.footer.text:
+                total_chars += len(embed.footer.text)
+
+        self.assertLessEqual(total_chars, 6000)
+        self.assertIn("Track Title Number 1", embeds[0].description)
+
 
 class BotSetupTest(unittest.IsolatedAsyncioTestCase):
     async def test_music_cog_registers_all_slash_commands(self):
