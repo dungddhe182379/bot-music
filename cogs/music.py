@@ -18,13 +18,24 @@ LOGGER = logging.getLogger(__name__)
 
 
 def is_url(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def is_playlist_url(value: str) -> bool:
-    parsed = urlparse(value)
-    return is_url(value) and ("list=" in parsed.query or "playlist" in parsed.path)
+    if not is_url(value):
+        return False
+    parsed = urlparse(value.strip())
+    path = parsed.path.lower()
+    query = parsed.query.lower()
+    if "/playlist" in path:
+        return True
+    if "list=" in query and "v=" not in query:
+        return True
+    return False
 
 
 async def defer_interaction(ctx: commands.Context) -> None:
@@ -102,9 +113,19 @@ class YTDLSource:
 
     @classmethod
     def from_data(cls, requester, data):
+        webpage_url = data.get("webpage_url")
+        if not webpage_url:
+            raw_url = data.get("url")
+            if raw_url and (raw_url.startswith("http://") or raw_url.startswith("https://")):
+                webpage_url = raw_url
+            elif data.get("id"):
+                webpage_url = f"https://www.youtube.com/watch?v={data['id']}"
+            else:
+                webpage_url = raw_url
+
         return cls(
             requester,
-            webpage_url=data.get("webpage_url") or data.get("url"),
+            webpage_url=webpage_url,
             title=data.get("title") or "Unknown title",
             duration=data.get("duration"),
         )
@@ -379,18 +400,43 @@ class Music(commands.Cog):
         view = YTDLChoiceView(self, ctx, sources)
         view.message = await ctx.send(embed=embed, view=view)
 
-    async def _queue_playlist(self, ctx, url: str):
-        data = await YTDL.extract_playlist(url)
-        entries = [entry for entry in data.get("entries", []) if entry]
+    async def _queue_playlist(self, ctx, query: str):
+        query = query.strip()
+        is_query_url = is_url(query)
+        if not is_query_url:
+            search_target = f"ytsearch1:{query} playlist"
+        else:
+            search_target = query
+
+        data = await YTDL.extract_playlist(search_target)
+        if not data:
+            raise DownloadError("No playlist results were found.")
+
+        if data.get("_type") == "playlist" and data.get("entries"):
+            entries = [entry for entry in data["entries"] if entry]
+            if entries and entries[0].get("_type") == "playlist":
+                data = entries[0]
+                entries = [entry for entry in data.get("entries", []) if entry]
+        else:
+            entries = [entry for entry in data.get("entries", []) if entry]
+
         if not entries:
             raise DownloadError("No playable tracks found in this playlist.")
+
+        max_tracks = 100
+        total_found = len(entries)
+        entries = entries[:max_tracks]
+
         player = self.get_player(ctx)
         for entry in entries:
             source = YTDLSource.from_data(ctx.author, entry)
             await player.queue.put(source)
-        title = data.get("title") or "Playlist"
+
+        title = data.get("title") or query
+        url_display = data.get("webpage_url") or (query if is_query_url else f"https://www.youtube.com/results?search_query={query}")
+        count_msg = f"**{len(entries)}** tracks" if total_found <= max_tracks else f"**{len(entries)}** tracks (capped from {total_found})"
         embed = discord.Embed(
-            description=f"Added **{len(entries)}** tracks from [{title}]({url}) to queue 📀",
+            description=f"Added {count_msg} from [{title}]({url_display}) to queue 📀",
             color=discord.Color.greyple(),
         )
         embed.set_author(icon_url=self.bot.user.display_avatar.url, name="Playlist Added 🎶")
@@ -402,9 +448,10 @@ class Music(commands.Cog):
     @app_commands.guild_only()
     async def play(self, ctx, *, search: str):
         await defer_interaction(ctx)
-        if not search or len(search) > 250:
+        search = search.strip()
+        if not search:
             return await self.send_error_embed(
-                ctx, "The search must be between 1 and 250 characters."
+                ctx, "Please provide a search term or URL."
             )
         if is_playlist_url(search):
             await self._queue_playlist(ctx, search)
@@ -416,14 +463,12 @@ class Music(commands.Cog):
         else:
             await self.list_choices(ctx, search)
 
-    @commands.hybrid_command(name="playlist", aliases=["plsearch"], description="Queue an entire YouTube playlist.")
-    @app_commands.describe(url="A YouTube playlist URL")
+    @commands.hybrid_command(name="playlist", aliases=["plsearch"], description="Queue an entire YouTube playlist by URL or search.")
+    @app_commands.describe(search="A YouTube playlist URL or search query")
     @app_commands.guild_only()
-    async def playlist(self, ctx, *, url: str):
+    async def playlist(self, ctx, *, search: str):
         await defer_interaction(ctx)
-        if not is_url(url):
-            return await self.send_error_embed(ctx, "Please provide a valid playlist URL.")
-        await self._queue_playlist(ctx, url)
+        await self._queue_playlist(ctx, search)
 
     @commands.hybrid_command(name="loop", aliases=["lp", "repeat"], description="Repeat the current track.")
     @app_commands.describe(rep="Number of repeats, up to 10")

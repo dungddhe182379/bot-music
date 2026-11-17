@@ -20,7 +20,8 @@ class MusicHelpersTest(unittest.TestCase):
         self.assertFalse(is_url("tavern ambience music"))
         self.assertFalse(is_url("javascript:alert(1)"))
         self.assertTrue(is_playlist_url("https://www.youtube.com/playlist?list=PL123"))
-        self.assertTrue(is_playlist_url("https://www.youtube.com/watch?v=abc&list=PL123"))
+        self.assertTrue(is_playlist_url("https://music.youtube.com/playlist?list=PL123"))
+        self.assertFalse(is_playlist_url("https://www.youtube.com/watch?v=abc&list=PL123"))
         self.assertFalse(is_playlist_url("https://www.youtube.com/watch?v=abc"))
 
 
