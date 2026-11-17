@@ -14,6 +14,26 @@ from dotenv import load_dotenv
 LOGGER = logging.getLogger(__name__)
 
 
+def disable_quickedit():
+    """Vo hieu hoa QuickEdit Mode tren Windows console de tranh chuot click lam treo bot."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            GENERIC_READ = 0x80000000
+            GENERIC_WRITE = 0x40000000
+            OPEN_EXISTING = 3
+            handle = kernel32.CreateFileW("CONIN$", GENERIC_READ | GENERIC_WRITE, 3, None, OPEN_EXISTING, 0, None)
+            if handle != -1:
+                mode = ctypes.c_ulong()
+                if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                    new_mode = (mode.value & ~0x0040) | 0x0080
+                    kernel32.SetConsoleMode(handle, new_mode)
+                kernel32.CloseHandle(handle)
+        except Exception as exc:
+            LOGGER.debug("Could not disable QuickEdit mode: %s", exc)
+
+
 def acquire_single_instance_lock(port=49200):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -49,6 +69,7 @@ class MusicBot(commands.Bot):
 
 
 def main():
+    disable_quickedit()
     lock = acquire_single_instance_lock()
     if not lock:
         print("\n" + "=" * 65)

@@ -69,7 +69,15 @@ class YTDL:
         "lazy_playlist": False,
     }
     ffmpeg_options = {
-        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+        "before_options": (
+            "-reconnect 1 "
+            "-reconnect_at_eof 1 "
+            "-reconnect_streamed 1 "
+            "-reconnect_delay_max 5 "
+            "-reconnect_on_network_error 1 "
+            "-reconnect_on_http_error 4xx,5xx "
+            "-nostdin"
+        ),
         "options": "-vn",
     }
 
@@ -289,6 +297,8 @@ class MusicPlayer:
                             self.ctx, source, "Now playing 🎶"
                         )
                     await self.next.wait()
+                    # Allow 0.2s for the previous audio process to finish cleanup on Windows
+                    await asyncio.sleep(0.2)
                 except Exception as exc:
                     LOGGER.exception("Could not play %s", source.webpage_url)
                     await self.ctx.cog.send_error_embed(self.ctx, str(exc))
@@ -716,5 +726,35 @@ class Music(commands.Cog):
                 player.task.cancel()
 
 
+def patch_ffmpeg_kill():
+    """Bao ve tien trinh FFmpeg khoi bi treo pipe tren Windows."""
+    import discord.player
+    from discord.utils import MISSING
+
+    def safe_kill_process(self):
+        self._check_process_returncode()
+        proc = getattr(self, "_process", MISSING)
+        if proc is MISSING or proc is None:
+            return
+
+        pid = getattr(proc, "pid", "unknown")
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+        try:
+            # Gioi han cho toi da 2 giay, tranh bi block vinh vien khi Windows giu pipe handle
+            proc.communicate(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    discord.player.FFmpegAudio._kill_process = safe_kill_process
+
+
 async def setup(bot):
+    patch_ffmpeg_kill()
     await bot.add_cog(Music(bot))

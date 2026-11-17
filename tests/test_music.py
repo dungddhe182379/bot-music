@@ -137,6 +137,26 @@ class PlaylistEmbedTest(unittest.TestCase):
         self.assertLessEqual(total_chars, 6000)
         self.assertIn("Track Title Number 1", embeds[0].description)
 
+    def test_safe_kill_process_does_not_block_on_hanging_communicate(self):
+        import subprocess
+        from cogs.music import patch_ffmpeg_kill
+        import discord.player
+        patch_ffmpeg_kill()
+
+        mock_proc = SimpleNamespace(
+            pid=12345,
+            kill=unittest.mock.MagicMock(),
+            communicate=unittest.mock.MagicMock(side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=2)),
+        )
+        fake_audio = SimpleNamespace(
+            _process=mock_proc,
+            _check_process_returncode=unittest.mock.MagicMock(),
+        )
+
+        discord.player.FFmpegAudio._kill_process(fake_audio)
+        mock_proc.kill.assert_called()
+        mock_proc.communicate.assert_called_once_with(timeout=2)
+
 
 class BotSetupTest(unittest.IsolatedAsyncioTestCase):
     async def test_music_cog_registers_all_slash_commands(self):
