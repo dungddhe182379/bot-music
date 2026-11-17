@@ -266,6 +266,7 @@ class MusicPlayer:
 
     async def player_loop(self):
         await self.ctx.bot.wait_until_ready()
+        consecutive_errors = 0
         try:
             while not self.ctx.bot.is_closed():
                 self.next.clear()
@@ -297,11 +298,27 @@ class MusicPlayer:
                             self.ctx, source, "Now playing 🎶"
                         )
                     await self.next.wait()
+                    consecutive_errors = 0
                     # Allow 0.2s for the previous audio process to finish cleanup on Windows
                     await asyncio.sleep(0.2)
                 except Exception as exc:
+                    consecutive_errors += 1
                     LOGGER.exception("Could not play %s", source.webpage_url)
-                    await self.ctx.cog.send_error_embed(self.ctx, str(exc))
+                    if consecutive_errors >= 2:
+                        # Clear remaining queue to prevent error spam
+                        while not self.queue.empty():
+                            try:
+                                self.queue.get_nowait()
+                                self.queue.task_done()
+                            except asyncio.QueueEmpty:
+                                break
+                        await self.ctx.cog.send_error_embed(
+                            self.ctx,
+                            "Đã dừng phát: YouTube từ chối kết nối từ máy chủ (yêu cầu xác minh). Hàng đợi đã được hủy để chống spam.",
+                        )
+                        break
+                    else:
+                        await self.ctx.cog.send_error_embed(self.ctx, str(exc))
                 finally:
                     self.current = None
                     self.queue.task_done()
